@@ -409,8 +409,14 @@ import { getFirestore, collection, doc, getDocs, onSnapshot, setDoc, deleteDoc, 
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
   from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 
-/* __FIREBASE_CONFIG_PLACEHOLDER__ */
-const firebaseConfig = {"apiKey":"REPLACE_ME","authDomain":"nolbaldashboard.firebaseapp.com","projectId":"nolbaldashboard"};
+const firebaseConfig = {
+  apiKey: "AIzaSyAPg1_LfOt-wLl5y8xRUqBnGvdNiLpKPgA",
+  authDomain: "nolbaldashboard.firebaseapp.com",
+  projectId: "nolbaldashboard",
+  storageBucket: "nolbaldashboard.firebasestorage.app",
+  messagingSenderId: "1073359858917",
+  appId: "1:1073359858917:web:921c79087cbb913f03f80c"
+};
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
