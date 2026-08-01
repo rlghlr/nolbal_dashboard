@@ -1,7 +1,7 @@
 {
   "hosting": {
     "site": "nolbaldashboard",
-    "public": ".",
+    "public": "public",
     "ignore": [
       "firebase.json",
       "**/.*",
