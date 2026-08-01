@@ -1,0 +1,14 @@
+{
+  "name": "nolbal-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "놀발 데이터 관리자 - Firestore 연동 대시보드 및 데이터 입력 관리자",
+  "scripts": {
+    "seed": "node scripts/seed.js",
+    "setup": "node scripts/setup.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "google-auth-library": "^9.15.0"
+  }
+}
