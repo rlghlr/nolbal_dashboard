@@ -315,6 +315,22 @@ body{margin:0;background:#fff;font-family:Arial,"Noto Sans KR",sans-serif;color:
           <div class="field" id="newDateWrap" style="display:none"><label>새 날짜</label><input type="date" id="dailyNewDate"></div>
         </div>
       </div>
+
+      <div class="card" id="importCard">
+        <h4>📁 파일로 일괄 입력 <span style="font-weight:400;color:#999;font-size:11px">— AOS/iOS 다운로드·삭제 CSV + 결제·취소·쿠폰·탈퇴 xlsx</span></h4>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <input type="file" id="importFiles" multiple accept=".csv,.xlsx" style="font-size:12px">
+          <button class="btn-add" id="importParseBtn">파일 분석</button>
+        </div>
+        <div id="importInfo" class="mini-note"></div>
+        <div id="importPreview" style="overflow:auto;margin-top:8px"></div>
+        <div id="importActions" style="display:none;margin-top:10px;align-items:center;gap:10px">
+          <button class="btn-save" id="importSaveBtn">미리보기 전체 날짜 일괄 저장</button>
+          <span class="status" id="importStatus"></span>
+        </div>
+        <div class="mini-note" style="margin-top:6px">※ 채널 유입·DAU·신규가입은 이 파일들에 없어 기존 값이 유지됩니다. 파생값은 자동 재계산됩니다.</div>
+      </div>
+
       <div id="validateBox" class="validate ok"></div>
       <div id="dailyForm"></div>
       <div class="save-bar">
@@ -402,6 +418,7 @@ body{margin:0;background:#fff;font-family:Arial,"Noto Sans KR",sans-serif;color:
 <div class="tooltip" id="tooltip"></div>
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getFirestore, collection, doc, getDocs, onSnapshot, setDoc, deleteDoc, writeBatch, query, orderBy }
@@ -806,6 +823,137 @@ $('dailyDelBtn').addEventListener('click',async()=>{
   if(!confirm(`${date} 일별 데이터를 삭제할까요?`)) return;
   try{ await deleteDoc(doc(db,'daily',date)); toast(`${date} 삭제됨`); }
   catch(e){ toast('삭제 실패: '+(e.code||e.message),true); }
+});
+
+/* ===================== 파일 일괄 입력 (AOS/iOS CSV + 결제 xlsx) ===================== */
+const EXCEL_EPOCH=Date.UTC(1899,11,30);
+const pad2=n=>String(n).padStart(2,'0');
+function parseDateAny(s){
+  if(s instanceof Date) return `${s.getFullYear()}-${pad2(s.getMonth()+1)}-${pad2(s.getDate())}`;
+  if(typeof s==='number'){ const d=new Date(EXCEL_EPOCH+s*86400000); return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth()+1)}-${pad2(d.getUTCDate())}`; }
+  s=String(s).trim(); let m;
+  if(m=s.match(/(\d{4})-(\d{2})-(\d{2})/)) return `${m[1]}-${m[2]}-${m[3]}`;
+  if(m=s.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/)) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  if(m=s.match(/(\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})\./)) return `20${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  return null;
+}
+const inum=x=>{ if(x==null)return 0; const n=Number(String(x).replace(/,/g,'').trim()); return isNaN(n)?0:n; };
+async function decodeCsvFile(file){
+  const buf=await file.arrayBuffer();
+  try{ const t=new TextDecoder('utf-8',{fatal:true}).decode(buf); if(/날짜|사용자|다운로드|삭제/.test(t)) return t; throw 0; }
+  catch(e){ try{ return new TextDecoder('euc-kr').decode(buf); }catch(_){ return new TextDecoder('utf-8').decode(buf); } }
+}
+function parseCsvText(text){
+  const rows=[]; let row=[],cur='',q=false;
+  for(let i=0;i<text.length;i++){ const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+    else { if(c==='"')q=true; else if(c===','){row.push(cur);cur='';} else if(c==='\n'){row.push(cur);rows.push(row);row=[];cur='';} else if(c!=='\r')cur+=c; }
+  }
+  if(cur!==''||row.length){ row.push(cur); rows.push(row); }
+  return rows;
+}
+function detectCsvKind(t){
+  if(/전체\s*다운로드/.test(t)) return 'iosDownload';
+  if(/iOS/i.test(t)&&/삭제/.test(t)) return 'iosDelete';
+  if(/획득/.test(t)) return 'aosDownload';
+  if(/손실/.test(t)) return 'aosDelete';
+  return 'unknown';
+}
+function ensureD(map,d){ return map[d]||(map[d]={}); }
+function applyCsv(kind,rows,map){
+  let cnt=0;
+  for(const r of rows){
+    const d=parseDateAny(r[0]); if(!d) continue;
+    if(kind==='iosDownload' && r.length>=4){ const o=ensureD(map,d); o.iosDownload=inum(r[1]); o.iosFirstDownload=inum(r[2]); o.iosRedownload=inum(r[3]); cnt++; }
+    else if(kind==='iosDelete' && r.length>=2){ ensureD(map,d).iosDelete=inum(r[1]); cnt++; }
+    else if(kind==='aosDownload' && r.length>=2){ ensureD(map,d).aosDownload=inum(r[1]); cnt++; }
+    else if(kind==='aosDelete' && r.length>=2){ ensureD(map,d).aosDelete=inum(r[1]); cnt++; }
+  }
+  return cnt;
+}
+function xlsxSheetSum(wb,name){
+  if(!wb.SheetNames.includes(name)) return {};
+  const arr=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true});
+  const out={};
+  for(let i=1;i<arr.length;i++){ const r=arr[i]; if(!r||!r.length)continue; const d=parseDateAny(r[0]); if(!d)continue;
+    let s=0; for(let j=1;j<r.length;j++){ if(typeof r[j]==='number') s+=r[j]; } out[d]=s; }
+  return out;
+}
+function applyXlsx(wb,map){
+  const g=n=>xlsxSheetSum(wb,n);
+  const lex=g('기존회원 결제수(레저)'),lnew=g('신규회원 결제수(레저)'),hex=g('기존회원 결제수(숙박)'),hnew=g('신규회원 결제수(숙박)');
+  const lcx=g('기존회원 취소수(레저)'),lcn=g('신규회원 취소수(레저)'),hcx=g('기존회원 취소수(숙박)'),hcn=g('신규회원 취소수(숙박)');
+  const cpl=g('쿠폰사용결제건(레저)'),cph=g('쿠폰사용결제건(숙박)'),wd=g('탈퇴수');
+  const val=(m,d)=>m[d]||0;
+  const dates=new Set([...Object.keys(lex),...Object.keys(lnew),...Object.keys(hex),...Object.keys(hnew),
+    ...Object.keys(lcx),...Object.keys(lcn),...Object.keys(hcx),...Object.keys(hcn),...Object.keys(cpl),...Object.keys(cph),...Object.keys(wd)]);
+  let cnt=0;
+  for(const d of dates){ const o=ensureD(map,d);
+    if(d in lex) o.leisureExisting=val(lex,d);
+    if(d in lnew) o.leisureNew=val(lnew,d);
+    if(d in hex) o.lodgingExisting=val(hex,d);
+    if(d in hnew) o.lodgingNew=val(hnew,d);
+    if((d in lcx)||(d in lcn)) o.leisureCancel=val(lcx,d)+val(lcn,d);
+    if((d in hcx)||(d in hcn)) o.lodgingCancel=val(hcx,d)+val(hcn,d);
+    if((d in cpl)||(d in cph)) o.coupon=val(cpl,d)+val(cph,d);
+    if(d in wd) o.withdraw=val(wd,d);
+    cnt++;
+  }
+  return cnt;
+}
+let importedMap=null;
+$('importParseBtn').addEventListener('click',async()=>{
+  const files=[...$('importFiles').files];
+  if(!files.length){ toast('파일을 선택하세요',true); return; }
+  if(typeof XLSX==='undefined' && files.some(f=>f.name.toLowerCase().endsWith('.xlsx'))){ toast('xlsx 파서 로딩 실패(네트워크 확인)',true); return; }
+  const map={}; const notes=[];
+  for(const f of files){
+    try{
+      if(f.name.toLowerCase().endsWith('.xlsx')){
+        const wb=XLSX.read(await f.arrayBuffer(),{cellDates:true});
+        const c=applyXlsx(wb,map); notes.push(`${f.name} → 결제·취소·쿠폰·탈퇴 (${c}일)`);
+      }else{
+        const text=await decodeCsvFile(f); const kind=detectCsvKind(text);
+        const c=applyCsv(kind,parseCsvText(text),map);
+        notes.push(`${f.name} → ${kind==='unknown'?'인식 실패 ⚠':kind} (${c}건)`);
+      }
+    }catch(e){ notes.push(`${f.name} → 오류: ${e.message||e}`); }
+  }
+  importedMap=map;
+  const dates=Object.keys(map).sort();
+  $('importInfo').innerHTML=notes.map(n=>'· '+n).join('<br>');
+  if(!dates.length){ $('importPreview').innerHTML='<div class="grid-empty">인식된 데이터가 없습니다.</div>'; $('importActions').style.display='none'; return; }
+  const cols=[['aosDownload','AOS DL'],['iosDownload','iOS DL'],['aosDelete','AOS 삭제'],['iosDelete','iOS 삭제'],['leisureExisting','레저기존'],['leisureNew','레저신규'],['lodgingExisting','숙박기존'],['lodgingNew','숙박신규'],['leisureCancel','레저취소'],['lodgingCancel','숙박취소'],['coupon','쿠폰'],['withdraw','탈퇴']];
+  $('importPreview').innerHTML=`<table class="grid-table"><thead><tr><th>날짜</th>${cols.map(c=>`<th>${c[1]}</th>`).join('')}</tr></thead>
+    <tbody>${dates.map(d=>`<tr><td>${d}</td>${cols.map(c=>`<td class="num" style="padding:6px 8px">${map[d][c[0]]!=null?fmt.format(map[d][c[0]]):'<span style=\"color:#ccc\">·</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  $('importActions').style.display='flex';
+  $('importStatus').textContent=`${dates.length}일 인식됨`;
+});
+$('importSaveBtn').addEventListener('click',async()=>{
+  if(!importedMap) return;
+  const dates=Object.keys(importedMap).sort();
+  if(!confirm(`${dates.length}개 날짜의 일별 지표를 저장할까요?\n(채널 유입·DAU·신규가입 등 기존 값은 유지)`)) return;
+  $('importStatus').textContent='저장 중…'; let ok=0;
+  try{
+    for(const d of dates){
+      const ex=DATA.daily.find(r=>r.date===d)||{};
+      const b={...ex, ...importedMap[d]};
+      const rec={ date:d, day:dayOf(d),
+        aosDownload:inum(b.aosDownload), aosDelete:inum(b.aosDelete),
+        iosDownload:inum(b.iosDownload), iosDelete:inum(b.iosDelete),
+        iosFirstDownload:inum(b.iosFirstDownload), iosRedownload:inum(b.iosRedownload),
+        androidInflow:inum(b.androidInflow), iosInflow:inum(b.iosInflow), webInflow:inum(b.webInflow),
+        leisureExisting:inum(b.leisureExisting), leisureNew:inum(b.leisureNew),
+        lodgingExisting:inum(b.lodgingExisting), lodgingNew:inum(b.lodgingNew),
+        leisureCancel:inum(b.leisureCancel), lodgingCancel:inum(b.lodgingCancel),
+        coupon:inum(b.coupon), withdraw:inum(b.withdraw),
+        newSignups: b.newSignups===undefined?null:b.newSignups };
+      const der=computeDerived(rec);
+      await setDoc(doc(db,'daily',d), {...rec, ...der});
+      ok++; $('importStatus').textContent=`저장 중… ${ok}/${dates.length}`;
+    }
+    toast(`${ok}개 날짜 저장 완료`); $('importStatus').textContent=`✔ ${ok}개 날짜 저장 완료`;
+  }catch(e){ toast('저장 실패: '+(e.code||e.message),true); $('importStatus').textContent='저장 실패: '+(e.code||e.message); }
 });
 
 /* ===================== 인기 상품 그리드 ===================== */
